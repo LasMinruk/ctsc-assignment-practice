@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  # ─── MongoDB ───────────────────────────────────────────────
+  mongodb:
+    image: mongo:7-jammy
+    container_name: taskflow-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - taskflow-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Auth Service ──────────────────────────────────────────
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    container_name: taskflow-auth
+    restart: unless-stopped
+    environment:
+      PORT: 3001
+      MONGO_URI: mongodb://admin:password123@mongodb:27017/authdb?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-supersecret_change_in_prod}
+      NODE_ENV: production
+    ports:
+      - "3001:3001"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - taskflow-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ─── Task Service ──────────────────────────────────────────
+  task-service:
+    build:
+      context: ./task-service
+      dockerfile: Dockerfile
+    container_name: taskflow-tasks
+    restart: unless-stopped
+    environment:
+      PORT: 3002
+      MONGO_URI: mongodb://admin:password123@mongodb:27017/taskdb?authSource=admin
+      AUTH_SERVICE_URL: http://auth-service:3001
+      NOTIFICATION_SERVICE_URL: http://notification-service:3003
+      NODE_ENV: production
+    ports:
+      - "3002:3002"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+    networks:
+      - taskflow-network
+
+  # ─── Notification Service ──────────────────────────────────
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: taskflow-notifications
+    restart: unless-stopped
+    environment:
+      PORT: 3003
+      MONGO_URI: mongodb://admin:password123@mongodb:27017/notifdb?authSource=admin
+      NODE_ENV: production
+    ports:
+      - "3003:3003"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - taskflow-network
+
+  # ─── API Gateway ───────────────────────────────────────────
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: taskflow-gateway
+    restart: unless-stopped
+    environment:
+      PORT: 3004
+      AUTH_SERVICE_URL: http://auth-service:3001
+      TASK_SERVICE_URL: http://task-service:3002
+      NOTIF_SERVICE_URL: http://notification-service:3003
+      NODE_ENV: production
+    ports:
+      - "3004:3004"
+    depends_on:
+      - auth-service
+      - task-service
+      - notification-service
+    networks:
+      - taskflow-network
+
+networks:
+  taskflow-network:
+    driver: bridge
+
+volumes:
+  mongo_data:

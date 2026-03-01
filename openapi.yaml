@@ -1,0 +1,311 @@
+openapi: 3.0.3
+info:
+  title: TaskFlow Microservices API
+  description: |
+    TaskFlow is a microservice-based task management system with 4 services:
+    - **Auth Service** (port 3001) — JWT authentication
+    - **Task Service** (port 3002) — Task CRUD operations
+    - **Notification Service** (port 3003) — Event notifications
+    - **API Gateway** (port 3004) — Single entry point
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3004
+    description: API Gateway (local)
+  - url: http://localhost:3001
+    description: Auth Service (direct)
+  - url: http://localhost:3002
+    description: Task Service (direct)
+  - url: http://localhost:3003
+    description: Notification Service (direct)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:       { type: string }
+        username: { type: string }
+        email:    { type: string }
+        role:     { type: string, enum: [user, admin] }
+
+    Task:
+      type: object
+      properties:
+        _id:         { type: string }
+        title:       { type: string }
+        description: { type: string }
+        status:      { type: string, enum: [todo, in-progress, done] }
+        priority:    { type: string, enum: [low, medium, high] }
+        userId:      { type: string }
+        dueDate:     { type: string, format: date-time }
+        tags:        { type: array, items: { type: string } }
+        createdAt:   { type: string, format: date-time }
+
+    Notification:
+      type: object
+      properties:
+        _id:       { type: string }
+        event:     { type: string }
+        recipient: { type: string }
+        subject:   { type: string }
+        message:   { type: string }
+        status:    { type: string, enum: [sent, failed, simulated] }
+        createdAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+paths:
+  # ── Auth ──────────────────────────────────────────────────
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                username: { type: string, minLength: 3 }
+                email:    { type: string, format: email }
+                password: { type: string, minLength: 6 }
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user:  { $ref: '#/components/schemas/User' }
+        '409': { description: User already exists }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:    { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user:  { $ref: '#/components/schemas/User' }
+        '401': { description: Invalid credentials }
+
+  /api/auth/verify:
+    post:
+      tags: [Auth]
+      summary: Verify JWT token (used by other services)
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: Token valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  user:  { $ref: '#/components/schemas/User' }
+        '401': { description: Invalid token }
+
+  /api/auth/profile:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+
+  # ── Tasks ─────────────────────────────────────────────────
+  /api/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks for authenticated user
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [todo, in-progress, done] }
+        - name: priority
+          in: query
+          schema: { type: string, enum: [low, medium, high] }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10 }
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks: { type: array, items: { $ref: '#/components/schemas/Task' } }
+                  total: { type: integer }
+
+    post:
+      tags: [Tasks]
+      summary: Create new task
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:       { type: string }
+                description: { type: string }
+                priority:    { type: string, enum: [low, medium, high] }
+                dueDate:     { type: string, format: date-time }
+                tags:        { type: array, items: { type: string } }
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+
+  /api/tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+
+    get:
+      tags: [Tasks]
+      summary: Get single task
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '404': { description: Task not found }
+
+    put:
+      tags: [Tasks]
+      summary: Update task
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:       { type: string }
+                description: { type: string }
+                status:      { type: string, enum: [todo, in-progress, done] }
+                priority:    { type: string, enum: [low, medium, high] }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+
+    delete:
+      tags: [Tasks]
+      summary: Delete task
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200': { description: Task deleted }
+
+  # ── Notifications ─────────────────────────────────────────
+  /api/notifications/send:
+    post:
+      tags: [Notifications]
+      summary: Send a notification (called by other services)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event]
+              properties:
+                event:     { type: string, example: TASK_CREATED }
+                taskData:  { type: object }
+                userEmail: { type: string }
+      responses:
+        '201':
+          description: Notification sent/logged
+
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List all notification logs
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications: { type: array, items: { $ref: '#/components/schemas/Notification' } }
+
+  /api/notifications/stats:
+    get:
+      tags: [Notifications]
+      summary: Get notification statistics by event type
+      responses:
+        '200': { description: Stats by event }
+
+  # ── Health ────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Gateway health check
+      responses:
+        '200': { description: OK }
+
+  /health/all:
+    get:
+      tags: [Health]
+      summary: Health check for all services
+      responses:
+        '200': { description: All services healthy }
+        '207': { description: Some services down }
